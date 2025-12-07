@@ -1,0 +1,251 @@
+---
+title: "Gênero e Política"
+author: "Júlia Naomi Panisi Toko"
+date: "2025-12-03"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(readxl)
+library(knitr)
+library(purrr)
+library(broom)
+
+```
+
+## Banco de dados
+
+```{r}
+
+# 1. CARREGAR E PREPARAR DADOS
+setwd("C:/Users/julia.panisi/Downloads/Gênero e Política")
+
+dados <- read_excel("Base de dados.xlsx", sheet = "Base de dados") %>%
+  select(where(~ !all(is.na(.)))) %>%
+  mutate(historico_gov = as.factor(historico_gov))
+
+# variáveis numéricas de interesse
+vars <- dados %>%
+  select(starts_with("gov_"), starts_with("pref_")) %>%
+  names()
+
+vars
+
+```
+
+## Estatística descritiva geral
+
+```{r}
+
+desc_vars <- map_dfr(
+  vars,
+  \(v){
+    x <- dados[[v]]
+    tibble(
+      variavel = v,
+      n        = sum(!is.na(x)),
+      media    = mean(x, na.rm = TRUE),
+      mediana  = median(x, na.rm = TRUE),
+      minimo   = min(x, na.rm = TRUE),
+      maximo   = max(x, na.rm = TRUE),
+      dp       = sd(x, na.rm = TRUE)
+    )
+  }
+)
+
+desc_vars
+
+```
+
+## Estatística descritiva por grupo
+
+```{r}
+
+# função de moda
+moda <- function(x){
+  x <- x[!is.na(x)]
+  if(length(x) == 0) return(NA_real_)
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+desc_hist <- map_dfr(
+  vars,
+  \(v){
+    dados %>%
+      group_by(historico_gov) %>%
+      summarise(
+        variavel = v,
+        n        = sum(!is.na(.data[[v]])),
+        media    = mean(.data[[v]], na.rm = TRUE),
+        moda     = moda(.data[[v]]),
+        mediana  = median(.data[[v]], na.rm = TRUE),
+        minimo   = min(.data[[v]], na.rm = TRUE),
+        maximo   = max(.data[[v]], na.rm = TRUE),
+        dp       = sd(.data[[v]], na.rm = TRUE),
+        .groups  = "drop"
+      )
+  }
+)
+
+tabela_sim  <- desc_hist %>% filter(historico_gov == "Sim")
+tabela_nao  <- desc_hist %>% filter(historico_gov == "Não")
+tabela_vice <- desc_hist %>% filter(historico_gov == "Vice elevada")
+
+desc_hist
+tabela_sim
+tabela_nao
+tabela_vice
+
+```
+
+## Testes estatísticos
+
+```{r}
+
+pega_anova <- function(var_nome, dados){
+  form <- as.formula(paste(var_nome, "~ historico_gov"))
+  mod  <- aov(form, data = dados)
+  s    <- summary(mod)[[1]]
+
+  tibble(
+    variavel  = var_nome,
+    F_value   = s[1, "F value"],
+    p_value   = s[1, "Pr(>F)"],
+    gl_grupos = s[1, "Df"],
+    gl_res    = s[2, "Df"]
+  )
+}
+
+resultados_anova <- map_dfr(vars, pega_anova, dados = dados)
+
+resultados_tukey <- map_dfr(
+  vars,
+  \(v){
+    form <- as.formula(paste(v, "~ historico_gov"))
+    mod  <- aov(form, data = dados)
+    
+    tuk  <- TukeyHSD(mod)$historico_gov  # matriz da comparação do fator
+    as_tibble(tuk, rownames = "comparacao") %>%
+      mutate(variavel = v, .before = 1)
+  }
+)
+
+resultados_tukey
+
+```
+
+## Gráficos preliminares
+
+```{r}
+
+# médias nacionais de cada variável
+medias_nacionais <- dados %>%
+  summarise(across(all_of(vars), ~ mean(.x, na.rm = TRUE))) %>%
+  pivot_longer(everything(), names_to = "variavel", values_to = "media_nacional")
+
+for (var in vars) {
+  media_nac <- medias_nacionais %>%
+    filter(variavel == var) %>%
+    pull(media_nacional)
+  
+  dados_plot <- dados %>%
+    select(sigla, historico_gov, !!sym(var)) %>%
+    filter(!is.na(!!sym(var)))
+  
+  p <- ggplot(dados_plot,
+              aes(x = reorder(sigla, !!sym(var)),
+                  y = !!sym(var),
+                  fill = historico_gov)) +
+    geom_col(alpha = 0.85, width = 0.7) +
+    geom_hline(yintercept = media_nac,
+               color = "black", size = 1, linetype = "dashed") +
+    labs(
+      title = paste("Proporção:", var),
+      x = "Estado (ordenado)",
+      y = "Proporção",
+      fill = "Histórico de\ngovernadoras",
+      subtitle = "Linha tracejada = média nacional"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 90, hjust = 1, size = 8),
+      plot.title  = element_text(size = 12, face = "bold")
+    ) +
+    coord_flip()
+  
+  print(p)
+  Sys.sleep(2)
+}
+
+```
+
+## Boxplots
+
+```{r}
+
+for(v in vars) {
+  p <- ggplot(dados, aes(y = !!sym(v))) +
+    geom_boxplot(fill = "steelblue", alpha = 0.7) +
+    labs(
+      title  = paste("Boxplot da variável:", v),
+      y      = "Proporção",
+      x      = NULL
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold")
+    )
+  
+  print(p)
+  Sys.sleep(1.5)
+}
+
+```
+
+## Comparação de descritiva com gráficos
+
+```{r}
+
+desc_media <- desc_hist %>%
+  select(historico_gov, variavel, media)
+
+graf_vars <- unique(desc_media$variavel)
+
+# um gráfico por variável
+for(v in graf_vars){
+  p <- desc_media %>%
+    filter(variavel == v) %>%
+    ggplot(aes(x = historico_gov, y = media, fill = historico_gov)) +
+    geom_col(width = 0.7, alpha = 0.85) +
+    labs(
+      title = paste("Média de", v, "por histórico de governadoras"),
+      x = "Histórico de governadoras",
+      y = "Média da variável",
+      fill = "Histórico"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold")
+    )
+  
+  print(p)
+  Sys.sleep(1.5)
+}
+
+# gráfico único com todas as variáveis
+ggplot(desc_media,
+       aes(x = variavel, y = media, fill = historico_gov)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Média das variáveis por histórico de governadoras",
+    x = "Variável",
+    y = "Média",
+    fill = "Histórico"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
